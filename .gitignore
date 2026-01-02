@@ -1,0 +1,29 @@
+# Pliki kompilacji
+*.o
+*.d
+
+# Pliki binarne (programy docelowe)
+kierownik
+piekarz
+kasjer
+klient
+check_shm
+
+# Pliki tymczasowe IPC
+ciastkarnia.key
+/tmp/ciastkarnia_cmd.fifo
+
+# Katalog logow
+logs/
+
+# Pliki edytorow
+*.swp
+*.swo
+*~
+.vscode/
+
+# macOS
+.DS_Store
+.backup/
+README.md.bak
+docs/opis_projektu.md.bak

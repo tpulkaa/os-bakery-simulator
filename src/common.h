@@ -25,6 +25,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <math.h>
 
 /*
  *  STALE KONFIGURACYJNE
@@ -37,7 +38,9 @@
 
 /* Sciezki plikow */
 #define KEY_FILE            "ciastkarnia.key"
+#define FIFO_CMD_PATH       "/tmp/ciastkarnia_cmd.fifo"
 #define LOG_DIR             "logs"
+#define REPORT_FILE         "logs/raport.txt"
 
 /* ftok() identyfikatory projektow */
 #define PROJ_SHM       'S'   /* Pamiec dzielona */
@@ -50,6 +53,11 @@
 #define SEM_SHM_MUTEX     0   /* Mutex na pamiec dzielona */
 #define SEM_SHOP_ENTRY    1   /* Semafor zliczajacy - wejscie do sklepu (init N) */
 #define SEM_CONVEYOR_BASE 2   /* Indeksy 2..2+P-1: wolne miejsca na podajnikach */
+/* Indeksy 2+P .. 2+P+2: guard semafory na kolejki komunikatow */
+#define SEM_GUARD_CONV(P)   (2 + (P))     /* Guard na kolejke podajnikow */
+#define SEM_GUARD_CHKOUT(P) (2 + (P) + 1) /* Guard na kolejke kas */
+#define SEM_GUARD_RCPT(P)   (2 + (P) + 2) /* Guard na kolejke paragonow */
+#define TOTAL_SEMS(P)       (2 + (P) + 3) /* Laczna liczba semaforow */
 
 /*
  *  KOLORY TERMINALA
@@ -76,5 +84,138 @@ typedef enum {
     PROC_CASHIER  = 2,
     PROC_CUSTOMER = 3
 } ProcessType;
+
+/* 
+ *  STRUKTURY DANYCH
+ */
+
+/**
+ * Definicja produktu ciastkarni.
+ */
+typedef struct {
+    char name[MAX_NAME_LEN];   /* Nazwa produktu */
+    double price;               /* Cena (PLN) */
+    int conveyor_capacity;      /* Ki - pojemnosc podajnika */
+} ProductDef;
+
+/**
+ * Glowna struktura pamieci dzielonej.
+ * Przechowuje caly stan symulacji.
+ */
+typedef struct {
+    /* --- Konfiguracja (ustawiana raz przez kierownika) --- */
+    int num_products;           /* P - liczba produktow (>10) */
+    int max_customers;          /* N - maks. klientow w sklepie */
+    int time_scale_ms;          /* ms na minute symulacji */
+    int open_hour, open_min;    /* Tp - godzina otwarcia ciastkarni */
+    int close_hour, close_min;  /* Tk - godzina zamkniecia */
+
+    /* --- Definicje produktow --- */
+    ProductDef products[MAX_PRODUCTS];
+
+    /* --- Stan sklepu (chronione przez SEM_SHM_MUTEX) --- */
+    int customers_in_shop;           /* Ilu klientow jest w sklepie */
+    int total_customers_entered;     /* Laczna liczba klientow */
+    int register_open[2];            /* 1 = kasa jest obsadzona */
+    int register_accepting[2];       /* 1 = kasa przyjmuje nowych klientow */
+    int register_queue_len[2];       /* Dlugosc kolejki do kasy */
+
+    /* --- Statystyki sprzedazy na kase --- */
+    int register_sales[2][MAX_PRODUCTS];   /* Ilosc sprzedanych szt. */
+    double register_revenue[2];             /* Przychod na kasie */
+
+    /* --- Statystyki produkcji piekarza --- */
+    int baker_produced[MAX_PRODUCTS];
+
+    /* --- Kosz ewakuacyjny przy kasach --- */
+    int basket_items[MAX_PRODUCTS];
+
+    /* --- PID-y procesow --- */
+    pid_t manager_pid;
+    pid_t baker_pid;
+    pid_t cashier_pids[2];
+
+    /* --- Flagi stanu symulacji --- */
+    int bakery_open;           /* 1 = piekarnia produkuje */
+    int shop_open;             /* 1 = sklep przyjmuje klientow */
+    int inventory_mode;        /* 1 = sygnal inwentaryzacji */
+    int evacuation_mode;       /* 1 = sygnal ewakuacji */
+    int simulation_running;    /* 1 = symulacja aktywna */
+
+    /* --- Zegar symulacji --- */
+    int sim_hour;
+    int sim_min;
+
+    /* --- Zarzadzanie procesami klientow --- */
+    int active_customers;      /* Aktywne procesy klientow */
+} SharedData;
+
+/* 
+ *  STRUKTURY KOMUNIKATOW (kolejki komunikatow IPC)
+ */
+
+/**
+ * Komunikat podajnika (piekarz -> klient).
+ * Kazdy komunikat = jedno ciastko na podajniku.
+ * mtype = product_id + 1 (mtype musi byc > 0)
+ */
+struct conveyor_msg {
+    long mtype;
+    int item_id;
+};
+
+/**
+ * Komunikat checkout (klient -> kasjer).
+ * Klient wysyla swoj koszyk do wybranej kasy.
+ * mtype = register_id + 1 (1 lub 2)
+ */
+struct checkout_msg {
+    long mtype;
+    pid_t customer_pid;
+    int items[MAX_PRODUCTS];
+};
+
+/**
+ * Komunikat paragonu (kasjer -> klient).
+ * mtype = customer_pid (aby klient mogl odebrac swoj paragon)
+ */
+struct receipt_msg {
+    long mtype;
+    double total;
+    int items[MAX_PRODUCTS];
+};
+
+/*
+ *  DOMYSLNA LISTA PRODUKTOW
+ */
+
+#define DEFAULT_NUM_PRODUCTS 12
+
+static const ProductDef DEFAULT_PRODUCTS[DEFAULT_NUM_PRODUCTS] = {
+    {"Kremowka",         5.50,  8},
+    {"Drozdzowka",       3.50, 10},
+    {"Paczek",           4.00, 12},
+    {"Rogalik",          3.00, 10},
+    {"Ciastko kremowe",  6.00,  8},
+    {"Sernik",          12.00,  5},
+    {"Szarlotka",       10.00,  5},
+    {"Eklerka",          7.50,  8},
+    {"Makowiec",        15.00,  4},
+    {"Piernik",          8.00,  6},
+    {"Ptysie",           4.50, 10},
+    {"Babeczka",         5.00, 10}
+};
+
+/* ================================================================
+ *  union semun - wymagane na niektorych systemach
+ * ================================================================ */
+
+#ifdef __linux__
+union semun {
+    int val;
+    struct semid_ds *buf;
+    unsigned short *array;
+};
+#endif
 
 #endif /* COMMON_H */

@@ -11,4 +11,15 @@ SharedData *attach_shared_memory(const char *keyfile);
 void detach_shared_memory(SharedData *shm);
 void remove_shared_memory(const char *keyfile);
 
+/* ===== Semafory ===== */
+
+int create_semaphores(const char *keyfile, int nsems);
+int get_semaphores(const char *keyfile, int nsems);
+void init_semaphore(int sem_id, int sem_num, int value);
+void sem_wait_op(int sem_id, int sem_num);
+void sem_signal_op(int sem_id, int sem_num);
+int sem_trywait_op(int sem_id, int sem_num);
+int sem_getval(int sem_id, int sem_num);
+void remove_semaphores(const char *keyfile);
+
 #endif /* IPC_UTILS_H */

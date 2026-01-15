@@ -186,3 +186,52 @@ void remove_semaphores(const char *keyfile)
     if (semctl(sem_id, 0, IPC_RMID) == -1)
         handle_warning("semctl IPC_RMID");
 }
+
+//KOLEJKI KOMUNIKATOW (Message Queues)
+
+int create_message_queue(const char *keyfile, int proj_id)
+{
+    key_t key = ftok(keyfile, proj_id);
+    if (key == -1)
+        handle_error("ftok (message queue)");
+
+    int mq_id = msgget(key, IPC_CREAT | IPC_EXCL | IPC_PERMS);
+    if (mq_id == -1) {
+        if (errno == EEXIST) {
+            mq_id = msgget(key, IPC_PERMS);
+            if (mq_id != -1) {
+                msgctl(mq_id, IPC_RMID, NULL);
+            }
+            mq_id = msgget(key, IPC_CREAT | IPC_EXCL | IPC_PERMS);
+        }
+        if (mq_id == -1)
+            handle_error("msgget (create)");
+    }
+
+    return mq_id;
+}
+
+int get_message_queue(const char *keyfile, int proj_id)
+{
+    key_t key = ftok(keyfile, proj_id);
+    if (key == -1)
+        handle_error("ftok (mq get)");
+
+    int mq_id = msgget(key, IPC_PERMS);
+    if (mq_id == -1)
+        handle_error("msgget (get)");
+
+    return mq_id;
+}
+
+void remove_message_queue(const char *keyfile, int proj_id)
+{
+    key_t key = ftok(keyfile, proj_id);
+    if (key == -1) return;
+
+    int mq_id = msgget(key, IPC_PERMS);
+    if (mq_id == -1) return;
+
+    if (msgctl(mq_id, IPC_RMID, NULL) == -1)
+        handle_warning("msgctl IPC_RMID");
+}

@@ -22,4 +22,10 @@ int sem_trywait_op(int sem_id, int sem_num);
 int sem_getval(int sem_id, int sem_num);
 void remove_semaphores(const char *keyfile);
 
+/* ===== Kolejki komunikatow (Message Queues) ===== */
+
+int create_message_queue(const char *keyfile, int proj_id);
+int get_message_queue(const char *keyfile, int proj_id);
+void remove_message_queue(const char *keyfile, int proj_id);
+
 #endif /* IPC_UTILS_H */

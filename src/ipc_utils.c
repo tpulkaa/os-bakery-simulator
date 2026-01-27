@@ -235,3 +235,47 @@ void remove_message_queue(const char *keyfile, int proj_id)
     if (msgctl(mq_id, IPC_RMID, NULL) == -1)
         handle_warning("msgctl IPC_RMID");
 }
+
+//LACZA (Pipes & FIFOs)
+
+void create_pipe(int pipefd[2])
+{
+    if (pipe(pipefd) == -1)
+        handle_error("pipe");
+}
+
+void create_fifo(const char *path)
+{
+    unlink(path);
+    if (mkfifo(path, 0660) == -1) {
+        if (errno != EEXIST)
+            handle_error("mkfifo");
+    }
+}
+
+void remove_fifo(const char *path)
+{
+    if (unlink(path) == -1) {
+        if (errno != ENOENT)
+            handle_warning("unlink (FIFO)");
+    }
+}
+
+//CZYSZCZENIE WSZYSTKICH ZASOBOW IPC
+
+void cleanup_all_ipc(const char *keyfile, int num_products)
+{
+    (void)num_products;
+
+    remove_message_queue(keyfile, PROJ_MQ_CONV);
+    remove_message_queue(keyfile, PROJ_MQ_CHKOUT);
+    remove_message_queue(keyfile, PROJ_MQ_RCPT);
+    remove_semaphores(keyfile);
+    remove_shared_memory(keyfile);
+    remove_fifo(FIFO_CMD_PATH);
+
+    if (unlink(keyfile) == -1) {
+        if (errno != ENOENT)
+            handle_warning("unlink (keyfile)");
+    }
+}

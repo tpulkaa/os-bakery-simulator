@@ -28,4 +28,14 @@ int create_message_queue(const char *keyfile, int proj_id);
 int get_message_queue(const char *keyfile, int proj_id);
 void remove_message_queue(const char *keyfile, int proj_id);
 
+/* ===== Lacza (Pipes & FIFOs) ===== */
+
+void create_pipe(int pipefd[2]);
+void create_fifo(const char *path);
+void remove_fifo(const char *path);
+
+/* ===== Czyszczenie wszystkich zasobow IPC ===== */
+
+void cleanup_all_ipc(const char *keyfile, int num_products);
+
 #endif /* IPC_UTILS_H */

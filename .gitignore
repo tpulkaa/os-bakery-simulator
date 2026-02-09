@@ -24,6 +24,3 @@ logs/
 
 # macOS
 .DS_Store
-.backup/
-README.md.bak
-docs/opis_projektu.md.bak

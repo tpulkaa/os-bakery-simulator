@@ -128,7 +128,8 @@ static void reap_children(void)
     while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
         /* Sprawdz czy to piekarz lub kasjer — nie dekrementuj klientow */
         if (g_shm != NULL && pid == g_shm->baker_pid) {
-            log_msg_color(C_RED, "UWAGA: Piekarz (PID:%d) zakonczyl prace nieoczekiwanie!", pid);
+            if (g_shm->simulation_running)
+                log_msg_color(C_RED, "UWAGA: Piekarz (PID:%d) zakonczyl prace nieoczekiwanie!", pid);
             g_shm->baker_pid = 0;
             continue;
         }
@@ -136,7 +137,8 @@ static void reap_children(void)
         if (g_shm != NULL) {
             for (int c = 0; c < 2; c++) {
                 if (g_shm->cashier_pids[c] == pid) {
-                    log_msg_color(C_RED, "UWAGA: Kasjer %d (PID:%d) zakonczyl prace nieoczekiwanie!", c+1, pid);
+                    if (g_shm->simulation_running)
+                        log_msg_color(C_RED, "UWAGA: Kasjer %d (PID:%d) zakonczyl prace nieoczekiwanie!", c+1, pid);
                     g_shm->cashier_pids[c] = 0;
                     g_shm->register_open[c] = 0;
                     g_shm->register_accepting[c] = 0;

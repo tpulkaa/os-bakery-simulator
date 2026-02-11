@@ -237,7 +237,7 @@ void sem_wait_undo(int sem_id, int sem_num)
  */
 void sem_signal_undo(int sem_id, int sem_num)
 {
-    struct sembuf sop;
+    struct sembuf sop; //dodac faktycnzy mutex
     sop.sem_num = sem_num;
     sop.sem_op  = 1;
     sop.sem_flg = SEM_UNDO;

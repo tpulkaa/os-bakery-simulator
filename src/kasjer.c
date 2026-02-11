@@ -141,8 +141,8 @@ static void process_checkout(struct checkout_msg *cmsg)
     /* Skanowanie produktow - z symulowanym opoznieniem */
     for (int i = 0; i < g_shm->num_products; i++) {
         if (cmsg->items[i] > 0) {
-            /* Symulacja skanowania: 1 min symulacji na produkt */
-            usleep(g_shm->time_scale_ms * 500); /* polowa minuty na szt */
+            /* Symulacja skanowania: szybkie skanowanie */
+            usleep(g_shm->time_scale_ms * 50); /* 0.05 min na szt */
 
             rmsg.items[i] = cmsg->items[i];
             double item_cost = cmsg->items[i] * g_shm->products[i].price;
@@ -163,15 +163,21 @@ static void process_checkout(struct checkout_msg *cmsg)
     g_shm->register_revenue[g_register_id] += total;
     sem_signal_undo(g_sem_id, SEM_SHM_MUTEX);
 
-    log_msg("Obsluzono klienta PID:%d - %d produktow, %.2f PLN",
-            cmsg->customer_pid, total_items, total);
-
     /* Wyslij paragon klientowi */
     if (msgsnd_guarded(g_mq_receipt, &rmsg, sizeof(rmsg) - sizeof(long),
                        g_sem_id, SEM_GUARD_RCPT(g_shm->num_products)) == -1) {
-        if (errno != EINTR && errno != EIDRM && errno != EINVAL)
+        if (errno == EIDRM || errno == EINVAL || errno == EINTR) {
+            log_msg("Paragon dla PID:%d nie wyslany (zamykanie symulacji)",
+                    cmsg->customer_pid);
+        } else {
             handle_warning("msgsnd (receipt)");
+            log_msg("Blad wysylania paragonu do klienta PID:%d",
+                    cmsg->customer_pid);
+        }
     }
+
+    log_msg("Obsluzono klienta PID:%d - %d produktow, %.2f PLN",
+            cmsg->customer_pid, total_items, total);
 }
 
 /* ================================================================

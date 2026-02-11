@@ -134,7 +134,7 @@ static void generate_shopping_list(int *shopping_list)
     memset(shopping_list, 0, sizeof(int) * MAX_PRODUCTS);
 
     /* Wybierz min. 2, max. 5 roznych produktow */
-    int num_types = 2 + rand() % 4;
+    int num_types =1;
     if (num_types > np) num_types = np;
 
     /* Losuj rozne produkty */
@@ -178,20 +178,37 @@ static void do_shopping(int *shopping_list)
         for (int q = 0; q < wanted; q++) {
             if (g_evacuation || g_terminate) return;
 
-            /* Proba pobrania produktu z podajnika (nieblokujaca) */
+            /* Proba pobrania produktu z podajnika — z retry */
             struct conveyor_msg cmsg;
-            ssize_t ret = msgrcv_guarded(g_mq_conveyor, &cmsg,
-                                 sizeof(cmsg) - sizeof(long),
-                                 i + 1, IPC_NOWAIT,
-                                 g_sem_id, SEM_GUARD_CONV(g_shm->num_products));
+            int retries = 0;
+            int max_retries = 5;  /* max prob na 1 sztuke */
+            ssize_t ret = -1;
 
-            if (ret == -1) {
+            while (retries < max_retries) {
+                if (g_evacuation || g_terminate) return;
+
+                ret = msgrcv_guarded(g_mq_conveyor, &cmsg,
+                                     sizeof(cmsg) - sizeof(long),
+                                     i + 1, IPC_NOWAIT,
+                                     g_sem_id, SEM_GUARD_CONV(g_shm->num_products));
+
+                if (ret >= 0) break;  /* Sukces */
+
                 if (errno == ENOMSG) {
-                    /* Podajnik pusty - nie kupujemy */
-                    break;
+                    retries++;
+                    if (retries < max_retries) {
+                        /* Czekaj ~1 min symulacji na dostawe */
+                        usleep(g_shm->time_scale_ms * 1000);
+                    }
+                    continue;
                 }
                 if (errno == EINTR) continue;
-                if (errno == EIDRM) return; /* Kolejka usunieta */
+                if (errno == EIDRM) return;
+                break;
+            }
+
+            if (ret == -1) {
+                /* Produkt niedostepny po wszystkich probach */
                 break;
             }
 
@@ -233,6 +250,9 @@ static int do_checkout(void)
         total_items += g_cart[i];
 
     if (total_items == 0) {
+        sem_wait_undo(g_sem_id, SEM_SHM_MUTEX);
+        g_shm->customers_not_served++;
+        sem_signal_undo(g_sem_id, SEM_SHM_MUTEX);
         log_msg("Koszyk pusty - opuszczam sklep bez zakupow.");
         return 0;
     }
@@ -267,10 +287,11 @@ static int do_checkout(void)
         return -1;
     }
 
+
     /* Czekaj na paragon - z timeoutem (sprawdzaj ewakuacje) */
     struct receipt_msg rmsg;
     int wait_cycles = 0;
-    int max_wait = 300; /* maks. 300 prob */
+    int max_wait = 200;
 
     while (!g_evacuation && !g_terminate && wait_cycles < max_wait) {
         ssize_t ret = msgrcv_guarded(g_mq_receipt, &rmsg,
@@ -280,6 +301,9 @@ static int do_checkout(void)
 
         if (ret >= 0) {
             /* Otrzymano paragon! */
+            sem_wait_undo(g_sem_id, SEM_SHM_MUTEX);
+            g_shm->customers_served++;
+            sem_signal_undo(g_sem_id, SEM_SHM_MUTEX);
             log_msg_color(C_GREEN,
                 "Paragon: %d produktow, RAZEM: %.2f PLN", total_items, rmsg.total);
             return 0;
@@ -299,6 +323,9 @@ static int do_checkout(void)
 
     if (g_evacuation) return -1;
 
+    sem_wait_undo(g_sem_id, SEM_SHM_MUTEX);
+    g_shm->customers_not_served++;
+    sem_signal_undo(g_sem_id, SEM_SHM_MUTEX);
     log_msg("Timeout czekania na paragon - opuszczam sklep.");
     return -1;
 }
@@ -349,6 +376,9 @@ int main(int argc, char *argv[])
 
     /* --- Wejscie do sklepu (semafor zliczajacy) --- */
     if (!g_shm->shop_open || g_shm->evacuation_mode) {
+        sem_wait_undo(g_sem_id, SEM_SHM_MUTEX);
+        g_shm->customers_not_served++;
+        sem_signal_undo(g_sem_id, SEM_SHM_MUTEX);
         log_msg("Sklep zamkniety - odchodzi.");
         detach_shared_memory(g_shm);
         return EXIT_SUCCESS;
@@ -375,6 +405,9 @@ int main(int argc, char *argv[])
     }
 
     if (entry_attempts >= 100) {
+        sem_wait_undo(g_sem_id, SEM_SHM_MUTEX);
+        g_shm->customers_not_served++;
+        sem_signal_undo(g_sem_id, SEM_SHM_MUTEX);
         log_msg("Czekanie zbyt dlugie - odchodzi.");
         detach_shared_memory(g_shm);
         return EXIT_SUCCESS;
@@ -391,6 +424,9 @@ int main(int argc, char *argv[])
 
     /* --- Sprawdz ewakuacje --- */
     if (g_evacuation) {
+        sem_wait_undo(g_sem_id, SEM_SHM_MUTEX);
+        g_shm->customers_not_served++;
+        sem_signal_undo(g_sem_id, SEM_SHM_MUTEX);
         handle_evacuation();
         detach_shared_memory(g_shm);
         return EXIT_SUCCESS;
@@ -401,6 +437,9 @@ int main(int argc, char *argv[])
 
     /* --- Sprawdz ewakuacje po zakupach --- */
     if (g_evacuation) {
+        sem_wait_undo(g_sem_id, SEM_SHM_MUTEX);
+        g_shm->customers_not_served++;
+        sem_signal_undo(g_sem_id, SEM_SHM_MUTEX);
         handle_evacuation();
         detach_shared_memory(g_shm);
         return EXIT_SUCCESS;
@@ -411,6 +450,9 @@ int main(int argc, char *argv[])
 
     /* --- Sprawdz ewakuacje po kasie --- */
     if (g_evacuation && checkout_result != 0) {
+        sem_wait_undo(g_sem_id, SEM_SHM_MUTEX);
+        g_shm->customers_not_served++;
+        sem_signal_undo(g_sem_id, SEM_SHM_MUTEX);
         handle_evacuation();
         detach_shared_memory(g_shm);
         return EXIT_SUCCESS;

@@ -103,14 +103,17 @@ static void *production_thread(void *arg)
     BakerThreadArgs *targs = (BakerThreadArgs *)arg;
     int tid = targs->thread_id;
 
+    if (targs->product_start >= targs->product_end) {
+        free(targs);
+        return NULL;
+    }
+
     while (!g_terminate && !g_evacuation && g_shm->bakery_open
            && g_shm->simulation_running) {
-        /* Losowy czas miedzy partiami: 5-15 minut symulacji */
-        int delay = (5 + rand() % 11) * g_shm->time_scale_ms;
-        /* Spimy w krotkich odcinkach aby szybko reagowac na sygnaly */
+        int delay = (20 + rand() % 40) * g_shm->time_scale_ms / 100;
         for (int d = 0; d < delay && !g_terminate && !g_evacuation
-             && g_shm->bakery_open && g_shm->simulation_running; d += 50) {
-            usleep(50 * 1000);
+             && g_shm->bakery_open && g_shm->simulation_running; d += 10) {
+            usleep(10 * 1000);
         }
 
         if (g_terminate || g_evacuation || !g_shm->bakery_open
@@ -124,7 +127,7 @@ static void *production_thread(void *arg)
         for (int t = 0; t < num_types; t++) {
             int prod_id = targs->product_start +
                           rand() % (targs->product_end - targs->product_start);
-            int quantity = 1 + rand() % 4; /* 1-4 sztuki */
+            int quantity = 8 + rand() % 13; /* 8-20 sztuki */
 
             for (int q = 0; q < quantity; q++) {
                 /* Sprawdz czy jest miejsce na podajniku (semafor) */
@@ -215,9 +218,9 @@ int main(int argc, char *argv[])
      * Dzielimy produkty na 2 grupy obsługiwane przez 2 watki.
      * Demonstracja: pthread_create, pthread_join
      */
-    int num_threads = 2;
+    int num_threads = (g_shm->num_products >= 2) ? 2 : 1;
     pthread_t threads[2];
-    int half = g_shm->num_products / 2;
+    int half = (g_shm->num_products + 1) / 2;
 
     for (int i = 0; i < num_threads; i++) {
         BakerThreadArgs *args = malloc(sizeof(BakerThreadArgs));

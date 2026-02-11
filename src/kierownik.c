@@ -32,6 +32,7 @@ static int         g_num_customers = 0;    /* Liczba slotow w tablicy */
 static int         g_customer_cap  = 0;    /* Pojemnosc tablicy */
 static volatile sig_atomic_t g_sigchld_received = 0;
 static volatile sig_atomic_t g_sigint_received  = 0;
+static volatile sig_atomic_t g_sigcont_received = 0;
 static int         g_max_time     = 0;     /* Maks. czas symulacji w sekundach (0 = bez limitu) */
 static int         g_cleanup_done = 0;     /* Flaga zapobiegajaca podwojnemu czyszczeniu */
 
@@ -69,13 +70,19 @@ static void atexit_cleanup(void)
  * ================================================================ */
 
 /**
- * Handler SIGCHLD - zbieranie procesow potomnych (zombie).
- * Ustawia flage do przetworzenia w petli glownej.
+ * Handler SIGCHLD - natychmiastowe zbieranie zombie.
+ * Wywoluje waitpid() bezposrednio w handlerze (async-signal-safe)
+ * aby zapobiec akumulacji zombie podczas SIGTSTP (Ctrl+Z).
  */
 static void sigchld_handler(int sig)
 {
     (void)sig;
+    int saved_errno = errno;
+    /* Natychmiast zbieraj zombie - zapobiega ich akumulacji podczas SIGTSTP */
+    while (waitpid(-1, NULL, WNOHANG) > 0)
+        ;
     g_sigchld_received = 1;
+    errno = saved_errno;
 }
 
 /**
@@ -85,6 +92,22 @@ static void sigint_handler(int sig)
 {
     (void)sig;
     g_sigint_received = 1;
+}
+
+/**
+ * Handler SIGCONT - po wznowieniu procesu (po Ctrl+Z + fg).
+ * Natychmiast zbiera zombie ktore mogly sie nagromadzic podczas zatrzymania.
+ */
+static void sigcont_handler(int sig)
+{
+    (void)sig;
+    int saved_errno = errno;
+    /* Po wznowieniu z SIGTSTP - zbierz wszystkie zombie */
+    while (waitpid(-1, NULL, WNOHANG) > 0)
+        ;
+    g_sigcont_received = 1;
+    g_sigchld_received = 1;
+    errno = saved_errno;
 }
 
 /**
@@ -109,6 +132,13 @@ static void setup_signal_handlers(void)
         handle_error("sigaction (SIGINT)");
     if (sigaction(SIGTERM, &sa, NULL) == -1)
         handle_error("sigaction (SIGTERM)");
+
+    /* SIGCONT - czyszczenie zombie po wznowieniu z Ctrl+Z */
+    sa.sa_handler = sigcont_handler;
+    sa.sa_flags   = SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGCONT, &sa, NULL) == -1)
+        handle_error("sigaction (SIGCONT)");
 }
 
 /* ================================================================
@@ -116,53 +146,79 @@ static void setup_signal_handlers(void)
  * ================================================================ */
 
 /**
- * Zbiera zakonczane procesy potomne (klientow).
- * Wywolywane po otrzymaniu SIGCHLD.
- * Uzywa waitpid z WNOHANG aby nie blokowac.
+ * Zbiera zakonczane procesy potomne i aktualizuje tablice PID.
+ *
+ * Uzywa kill(pid, 0) do skanowania tablicy PID zamiast polegac
+ * wylacznie na waitpid() - handler SIGCHLD juz zbiera zombie inline,
+ * wiec waitpid w petli glownej moze nie znalezc potomkow.
+ * kill(pid, 0) + ESRCH niezawodnie wykrywa martwe procesy.
+ *
+ * SIGCHLD jest blokowany podczas aktualizacji tablic aby uniknac
+ * interferencji z handlerem sygnalu.
  */
 static void reap_children(void)
 {
-    pid_t pid;
-    int status;
+    /* Zablokuj SIGCHLD podczas aktualizacji tablic PID */
+    sigset_t block_chld, oldset;
+    sigemptyset(&block_chld);
+    sigaddset(&block_chld, SIGCHLD);
+    sigprocmask(SIG_BLOCK, &block_chld, &oldset);
 
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-        /* Sprawdz czy to piekarz lub kasjer — nie dekrementuj klientow */
-        if (g_shm != NULL && pid == g_shm->baker_pid) {
+    /* Zbierz ewentualne zombie (safety net - handler tez zbiera) */
+    while (waitpid(-1, NULL, WNOHANG) > 0)
+        ;
+
+    if (g_shm == NULL) {
+        sigprocmask(SIG_SETMASK, &oldset, NULL);
+        return;
+    }
+
+    /* Sprawdz piekarza - czy proces jeszcze zyje */
+    if (g_shm->baker_pid > 0) {
+        if (kill(g_shm->baker_pid, 0) == -1 && errno == ESRCH) {
             if (g_shm->simulation_running)
-                log_msg_color(C_RED, "UWAGA: Piekarz (PID:%d) zakonczyl prace nieoczekiwanie!", pid);
+                log_msg_color(C_RED, "UWAGA: Piekarz (PID:%d) zakonczyl prace nieoczekiwanie!",
+                              g_shm->baker_pid);
             g_shm->baker_pid = 0;
-            continue;
         }
-        int is_cashier = 0;
-        if (g_shm != NULL) {
-            for (int c = 0; c < 2; c++) {
-                if (g_shm->cashier_pids[c] == pid) {
-                    if (g_shm->simulation_running)
-                        log_msg_color(C_RED, "UWAGA: Kasjer %d (PID:%d) zakonczyl prace nieoczekiwanie!", c+1, pid);
-                    g_shm->cashier_pids[c] = 0;
-                    g_shm->register_open[c] = 0;
-                    g_shm->register_accepting[c] = 0;
-                    is_cashier = 1;
-                    break;
-                }
+    }
+
+    /* Sprawdz kasjerow */
+    for (int c = 0; c < 2; c++) {
+        if (g_shm->cashier_pids[c] > 0) {
+            if (kill(g_shm->cashier_pids[c], 0) == -1 && errno == ESRCH) {
+                if (g_shm->simulation_running)
+                    log_msg_color(C_RED, "UWAGA: Kasjer %d (PID:%d) zakonczyl prace nieoczekiwanie!",
+                                  c + 1, g_shm->cashier_pids[c]);
+                g_shm->cashier_pids[c] = 0;
+                g_shm->register_open[c] = 0;
+                g_shm->register_accepting[c] = 0;
             }
         }
-        if (is_cashier) continue;
+    }
 
-        /* To klient — szukaj PID w tablicy klientow */
-        for (int i = 0; i < g_num_customers; i++) {
-            if (g_customer_pids[i] == pid) {
+    /* Sprawdz klientow - skanuj tablice PID i usun martwe procesy */
+    int reaped_count = 0;
+    for (int i = 0; i < g_num_customers; i++) {
+        if (g_customer_pids[i] > 0) {
+            if (kill(g_customer_pids[i], 0) == -1 && errno == ESRCH) {
                 g_customer_pids[i] = 0;
-                break;
+                reaped_count++;
             }
         }
+    }
 
-        /* Zaktualizuj licznik aktywnych klientow */
+    /* Zaktualizuj licznik aktywnych klientow hurtowo */
+    if (reaped_count > 0) {
         sem_wait_undo(g_sem_id, SEM_SHM_MUTEX);
-        if (g_shm->active_customers > 0)
-            g_shm->active_customers--;
+        g_shm->active_customers -= reaped_count;
+        if (g_shm->active_customers < 0)
+            g_shm->active_customers = 0;
         sem_signal_undo(g_sem_id, SEM_SHM_MUTEX);
     }
+
+    /* Przywroc maske sygnalow */
+    sigprocmask(SIG_SETMASK, &oldset, NULL);
 }
 
 /* ================================================================
@@ -194,7 +250,7 @@ static void print_usage(const char *prog)
 static int parse_args(int argc, char *argv[], SharedData *shm)
 {
     /* Wartosci domyslne */
-    shm->max_customers  = 10;
+    shm->max_customers  = 100;
     shm->num_products   = DEFAULT_NUM_PRODUCTS;
     shm->time_scale_ms  = 100;
     shm->open_hour      = 8;
@@ -235,7 +291,7 @@ static int parse_args(int argc, char *argv[], SharedData *shm)
     /* Walidacja parametrow */
     if (validate_int_range(shm->max_customers, 2, 100,
             "max_klientow (-n)") != 0) return -1;
-    if (validate_int_range(shm->num_products, 11, MAX_PRODUCTS,
+    if (validate_int_range(shm->num_products, 1, MAX_PRODUCTS,
             "produkty (-p)") != 0) return -1;
     if (validate_int_range(shm->time_scale_ms, 10, 5000,
             "skala_czasu (-s)") != 0) return -1;
@@ -319,6 +375,8 @@ static void init_shared_data(SharedData *shm)
     shm->customers_in_shop   = 0;
     shm->active_customers    = 0;
     shm->total_customers_entered = 0;
+    shm->customers_served        = 0;
+    shm->customers_not_served    = 0;
 
     /* Kasy: kasa 0 zawsze otwarta na poczatek, kasa 1 zamknieta */
     shm->register_open[0]      = 1;
@@ -667,9 +725,13 @@ static void generate_report(void)
     offset += snprintf(buf + offset, sizeof(buf) - offset,
         "--- STATYSTYKI OGOLNE ---\n"
         "Laczna liczba klientow: %d\n"
+        "Obsluzonych (paragon):  %d\n"
+        "Nieobsluzonych:         %d\n"
         "Tryb inwentaryzacji: %s\n"
         "Ewakuacja: %s\n\n",
         g_shm->total_customers_entered,
+        g_shm->customers_served,
+        g_shm->customers_not_served,
         g_shm->inventory_mode ? "TAK" : "NIE",
         g_shm->evacuation_mode ? "TAK" : "NIE");
 
@@ -800,10 +862,7 @@ static void shutdown_simulation(void)
     while (g_shm->customers_in_shop > 0 && wait_cycles < 100) {
         msleep_safe(g_shm->time_scale_ms);
         wait_cycles++;
-        if (g_sigchld_received) {
-            g_sigchld_received = 0;
-            reap_children();
-        }
+        reap_children();
     }
 
     if (g_shm->customers_in_shop > 0) {
@@ -829,18 +888,22 @@ static void shutdown_simulation(void)
     }
 
     /* Czekaj na zakonczenie procesow potomnych z limitem czasu */
-    int status;
-    pid_t pid;
     int timeout = 50;
     while (timeout > 0) {
-        pid = waitpid(-1, &status, WNOHANG);
-        if (pid == -1) break;   /* Brak potomkow */
-        if (pid == 0) {
-            msleep_safe(100);
-            timeout--;
-            continue;
-        }
-        /* Zebrano potomka pid */
+        reap_children();
+
+        /* Sprawdz czy ktokolwiek jeszcze zyje */
+        int any_alive = 0;
+        if (g_shm->baker_pid > 0) any_alive = 1;
+        for (int i = 0; i < 2 && !any_alive; i++)
+            if (g_shm->cashier_pids[i] > 0) any_alive = 1;
+        for (int i = 0; i < g_num_customers && !any_alive; i++)
+            if (g_customer_pids[i] > 0) any_alive = 1;
+
+        if (!any_alive) break;
+
+        msleep_safe(100);
+        timeout--;
     }
 
     /* Jesli procesy wciaz zyja - SIGKILL jako ostatecznosc */
@@ -856,10 +919,13 @@ static void shutdown_simulation(void)
             if (g_customer_pids[i] > 0)
                 kill(g_customer_pids[i], SIGKILL);
         }
+        /* Ostatnie czyszczenie po SIGKILL */
+        msleep_safe(200);
+        reap_children();
     }
 
-    /* Zbierz wszystkie zombie */
-    while (waitpid(-1, &status, WNOHANG) > 0)
+    /* Finalne zbieranie zombie */
+    while (waitpid(-1, NULL, WNOHANG) > 0)
         ;
 
     log_msg("Wszystkie procesy zakonczane.");
@@ -965,6 +1031,13 @@ int main(int argc, char *argv[])
 
     while (g_shm->simulation_running && !g_sigint_received) {
 
+        /* --- Obsluga SIGCONT (wznowienie po Ctrl+Z) --- */
+        if (g_sigcont_received) {
+            g_sigcont_received = 0;
+            log_msg("Wznowiono po zatrzymaniu (SIGCONT) - czyszczenie zombie...");
+            reap_children();
+        }
+
         /* --- Obsluga SIGCHLD --- */
         if (g_sigchld_received) {
             g_sigchld_received = 0;
@@ -1032,15 +1105,42 @@ int main(int argc, char *argv[])
                 customer_spawn_timer = 0;
                 next_spawn_interval = 1; /* co 1 minute symulacji */
 
-                /* Batch: 2-8 klientow naraz */
-                int batch = 2 + rand() % 7;
+                /* Batch: 20-50 klientow naraz */
+                int batch = 20 + rand() % 31;
+                int spawned = 0;
                 for (int b = 0; b < batch; b++) {
+                    if (g_shm->total_customers_entered >= MAX_CUSTOMERS_TOTAL)
+                        break;
                     if (g_shm->active_customers >= MAX_ACTIVE_CUST)
                         break;
                     start_customer();
+                    spawned++;
                 }
-                if (batch > 0)
-                    log_msg("%d nowych klientow przyszlo do sklepu.", batch);
+                if (spawned > 0)
+                    log_msg("%d nowych klientow przyszlo do sklepu. (lacznie: %d)",
+                            spawned, g_shm->total_customers_entered);
+            }
+        }
+
+        /* --- Auto-zamkniecie po 5000 klientow --- */
+        if (g_shm->total_customers_entered >= MAX_CUSTOMERS_TOTAL) {
+            if (g_shm->active_customers == 0) {
+                log_msg_color(C_GREEN, "Obsluzono %d klientow - zamykanie symulacji.",
+                              g_shm->total_customers_entered);
+                shutdown_simulation();
+                generate_report();
+                break;
+            }
+            /* Jesli zostalo kilku klientow i czekamy zbyt dlugo - wymus zamkniecie */
+            static int idle_ticks = 0;
+            idle_ticks++;
+            if (idle_ticks > 60) { /* 60 minut symulacji bez postepow */
+                log_msg_color(C_YELLOW,
+                    "Timeout: %d aktywnych klientow nie konczy zakupow - wymuszam zamkniecie.",
+                    g_shm->active_customers);
+                shutdown_simulation();
+                generate_report();
+                break;
             }
         }
 

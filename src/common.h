@@ -148,6 +148,10 @@ typedef struct {
 
     /* --- Zarzadzanie procesami klientow --- */
     int active_customers;      /* Aktywne procesy klientow */
+
+    /* --- Statystyki obslugi klientow --- */
+    int customers_served;      /* Klienci obsluzeni (otrzymali paragon) */
+    int customers_not_served;  /* Klienci nieobsluzeni (timeout/ewakuacja/pusty koszyk) */
 } SharedData;
 
 /* 
@@ -189,21 +193,10 @@ struct receipt_msg {
  *  DOMYSLNA LISTA PRODUKTOW
  */
 
-#define DEFAULT_NUM_PRODUCTS 12
+#define DEFAULT_NUM_PRODUCTS 1
 
 static const ProductDef DEFAULT_PRODUCTS[DEFAULT_NUM_PRODUCTS] = {
-    {"Kremowka",         5.50,  8},
-    {"Drozdzowka",       3.50, 10},
-    {"Paczek",           4.00, 12},
-    {"Rogalik",          3.00, 10},
-    {"Ciastko kremowe",  6.00,  8},
-    {"Sernik",          12.00,  5},
-    {"Szarlotka",       10.00,  5},
-    {"Eklerka",          7.50,  8},
-    {"Makowiec",        15.00,  4},
-    {"Piernik",          8.00,  6},
-    {"Ptysie",           4.50, 10},
-    {"Babeczka",         5.00, 10}
+    {"Bulka",            2.00, 100}
 };
 
 /* ================================================================

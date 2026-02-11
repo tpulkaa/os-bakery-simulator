@@ -41,11 +41,11 @@ cleanup_between() {
 }
 
 TESTS=(
-    "test_01_startup_cleanup.sh"
-    "test_02_no_zombies.sh"
-    "test_03_stress_capacity.sh"
-    "test_04_evacuation.sh"
-    "test_05_sigint_cleanup.sh"
+    "test_01_piekarz_klient_brak_podazy.sh"
+    "test_02_klient_kasjer_paragony.sh"
+    "test_03_msgqueue_kontencja_mtype.sh"
+    "test_04_pipe_raporty_produkcji.sh"
+    "test_05_sem_undo_kill.sh"
 )
 
 TOTAL=0; PASSED=0; FAILED=0
@@ -102,3 +102,4 @@ else
     echo -e "${RED}${FAILED} test(ow) nie przeszlo!${NC}"
     exit 1
 fi
+

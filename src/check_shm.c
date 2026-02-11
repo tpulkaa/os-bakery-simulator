@@ -65,6 +65,29 @@ int main(int argc, char *argv[])
     printf("register_open_1=%d\n", shm->register_open[1]);
     printf("register_queue_0=%d\n", shm->register_queue_len[0]);
     printf("register_queue_1=%d\n", shm->register_queue_len[1]);
+    printf("num_products=%d\n", shm->num_products);
+    printf("customers_served=%d\n", shm->customers_served);
+    printf("customers_not_served=%d\n", shm->customers_not_served);
+    printf("baker_pid=%d\n", (int)shm->baker_pid);
+    printf("bakery_open=%d\n", shm->bakery_open);
+
+    /* Suma produkcji piekarza */
+    int baker_total = 0;
+    for (int i = 0; i < shm->num_products; i++) {
+        printf("baker_produced_%d=%d\n", i, shm->baker_produced[i]);
+        baker_total += shm->baker_produced[i];
+    }
+    printf("baker_produced_total=%d\n", baker_total);
+
+    /* Suma sprzedazy obu kas */
+    double revenue_total = shm->register_revenue[0] + shm->register_revenue[1];
+    printf("register_revenue_total=%.2f\n", revenue_total);
+
+    /* Kosz ewakuacyjny */
+    int basket_total = 0;
+    for (int i = 0; i < shm->num_products; i++)
+        basket_total += shm->basket_items[i];
+    printf("basket_total=%d\n", basket_total);
 
     shmdt(shm);
     return 0;

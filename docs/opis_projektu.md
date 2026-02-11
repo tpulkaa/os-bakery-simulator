@@ -250,15 +250,65 @@ Procedura `shutdown_simulation()`:
 
 ## Automatyczne (`make test`)
 
-| #   | Skrypt                       | Opis                                                                  |
-| --- | ---------------------------- | --------------------------------------------------------------------- |
-| 01  | `test_01_startup_cleanup.sh` | Start -> procesy widoczne -> IPC istnieje -> zamkniecie -> IPC czyste |
-| 02  | `test_02_no_zombies.sh`      | Monitorowanie zombie co 0.5s -> 0 zombie                              |
-| 03  | `test_03_stress_capacity.sh` | N=4, szybki czas -> `customers_in_shop` nigdy > N                     |
-| 04  | `test_04_evacuation.sh`      | Ewakuacja przez FIFO -> raport z ewakuacja                            |
-| 05  | `test_05_sigint_cleanup.sh`  | SIGINT -> raport -> 0 zombie -> IPC czyste                            |
+Testy skupiaja sie na **komunikacji miedzy procesami (IPC)** i **edge case'ach**. Kazdy test:
 
-Dodatkowy: `test_kill.sh` -- `kill` i `kill -9` na procesach -> symulacja kontynuuje dzieki `SEM_UNDO`.
+1. Opisuje **cel** — jaki mechanizm IPC jest testowany
+2. Ustawia **parametry** wymuszajace edge case (np. maly sklep, zabicie procesu)
+3. Formuje **wnioski** — czy IPC dziala poprawnie w ekstremalnych warunkach
+
+| #   | Skrypt                 | IPC testowane         | Edge case                 |
+| --- | ---------------------- | --------------------- | ------------------------- |
+| 01  | `test_01_piekarz_...`  | msg queue podajnikow  | Zabicie piekarza          |
+| 02  | `test_02_klient_...`   | msg queue paragonow   | Filtrowanie mtype=PID     |
+| 03  | `test_03_msgqueue_...` | msg queue (kontencja) | 1 produkt, wielu klientow |
+| 04  | `test_04_pipe_...`     | pipe()                | Duzo write() na pipe      |
+| 05  | `test_05_sem_undo_...` | semafory SEM_UNDO     | kill -9 klienta           |
+
+### Test 01: Piekarz → Klient – brak podazy
+
+**Parametry:** `-t 15 -s 30 -n 8 -o 8 -c 12`
+
+Testuje kolejke komunikatow podajnikow (`msgsnd`/`msgrcv` z `mtype = product_id + 1`).
+Zabijamy piekarza w trakcie symulacji — klienci probuja pobrac produkty z pustej kolejki
+(`msgrcv` z `IPC_NOWAIT` zwraca `ENOMSG`). Weryfikacja: klienci nie zakleszczaja sie,
+wychodzą ze sklepu jako "nieobsluzeni", symulacja konczy sie normalnie.
+
+### Test 02: Klient → Kasjer – paragony (mtype = PID)
+
+**Parametry:** `-t 12 -s 20 -n 10 -o 8 -c 14`
+
+Testuje dwa typy kolejek: checkout (`klient → kasjer`, `mtype = register_id + 1`) oraz
+paragony (`kasjer → klient`, `mtype = customer_pid`). Przy duzym ruchu wielu klientow
+jednoczesnie placi — kazdy musi dostac SWOJ paragon (filtrowanie `msgrcv` po PID).
+Weryfikacja: `customers_served + customers_not_served == total_entered` (brak zgubionych).
+
+### Test 03: Piekarz → Klienci – rywalizacja o msgrcv na jednym mtype
+
+**Parametry:** `-t 12 -s 25 -n 10 -p 1 -o 8 -c 12`
+
+Testuje kolejke komunikatow gdy wielu klientow rywalizuje o ten sam produkt
+(`msgrcv` z `mtype = 1`). Tylko 1 produkt (Bulka), kazdy klient chce kupic 1-3 szt.
+Kazda bulka to 1 `msgsnd()`, kazdy zakup to 1 `msgrcv()` — wysoka kontencja.
+Weryfikacja: `served <= produced` (brak duplikacji wiadomosci), `served > 0` (msgrcv
+dziala mimo rywalizacji), brak zakleszczenia.
+
+### Test 04: Pipe – raporty produkcji
+
+**Parametry:** `-t 10 -s 15 -n 6 -o 8 -c 12`
+
+Testuje lacze nienazwane (pipe) miedzy piekarzem a kierownikiem. Piekarz wysyla raporty
+produkcji (`"BATCH:tid:count\n"`) — kierownik odczytuje je i aktualizuje `baker_produced[]`
+w SHM. Szybka produkcja (skala 15ms) wymusza duzo `write()`. Weryfikacja: `baker_produced`
+rosnie w czasie, pipe nie blokuje (brak deadlocka `write()`).
+
+### Test 05: SEM_UNDO – odpornosc na kill -9
+
+**Parametry:** `-t 20 -s 30 -n 3 -o 8 -c 14`
+
+Testuje mechanizm `SEM_UNDO` w semaforach System V. Klient w sklepie trzyma slot
+`SEM_SHOP_ENTRY` — `kill -9` go zabija. Bez `SEM_UNDO` slot bylby stracony i nowi
+klienci nie mogliby wejsc (deadlock). Z `SEM_UNDO` kernel automatycznie cofa operacje
+semafora. Weryfikacja: `sem_shop_entry` wraca do wyzszej wartosci, nowi klienci wchodza.
 
 # 9. Obsluga bledow
 
@@ -302,12 +352,11 @@ os-bakery-simulator/
 |   +-- check_shm.c            Narzedzie diagnostyczne SHM
 +-- tests/
 |   +-- run_tests.sh            Runner testow
-|   +-- test_01_startup_cleanup.sh
-|   +-- test_02_no_zombies.sh
-|   +-- test_03_stress_capacity.sh
-|   +-- test_04_evacuation.sh
-|   +-- test_05_sigint_cleanup.sh
-|   +-- test_kill.sh            Test odpornosci na kill
+|   +-- test_01_piekarz_klient_brak_podazy.sh
+|   +-- test_02_klient_kasjer_paragony.sh
+|   +-- test_03_msgqueue_kontencja_mtype.sh
+|   +-- test_04_pipe_raporty_produkcji.sh
+|   +-- test_05_sem_undo_kill.sh
 +-- logs/                       Generowany automatycznie
     +-- raport.txt
     +-- piekarz.log

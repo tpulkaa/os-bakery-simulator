@@ -1105,8 +1105,8 @@ int main(int argc, char *argv[])
                 customer_spawn_timer = 0;
                 next_spawn_interval = 1; /* co 1 minute symulacji */
 
-                /* Batch: 20-50 klientow naraz */
-                int batch = 20 + rand() % 31;
+                /* Batch: 8-15 klientow naraz (~11 avg, 5000/450min = ~11/min) */
+                int batch = 8 + rand() % 8;
                 int spawned = 0;
                 for (int b = 0; b < batch; b++) {
                     if (g_shm->total_customers_entered >= MAX_CUSTOMERS_TOTAL)
@@ -1133,8 +1133,15 @@ int main(int argc, char *argv[])
             }
             /* Jesli zostalo kilku klientow i czekamy zbyt dlugo - wymus zamkniecie */
             static int idle_ticks = 0;
+            static int last_active = -1;
+            if (last_active < 0) last_active = g_shm->active_customers;
+            if (g_shm->active_customers < last_active) {
+                /* Jest postep - klienci wchodza/wychodza, resetuj timer */
+                idle_ticks = 0;
+                last_active = g_shm->active_customers;
+            }
             idle_ticks++;
-            if (idle_ticks > 60) { /* 60 minut symulacji bez postepow */
+            if (idle_ticks > 120) { /* 120 min symulacji BEZ postepow */
                 log_msg_color(C_YELLOW,
                     "Timeout: %d aktywnych klientow nie konczy zakupow - wymuszam zamkniecie.",
                     g_shm->active_customers);

@@ -78,6 +78,11 @@ const char *get_process_name(ProcessType type, int id)
  */
 void log_msg(const char *fmt, ...)
 {
+    /* Po zamknieciu symulacji loguje tylko kierownik */
+    if (g_shm != NULL && !g_shm->simulation_running &&
+        g_proc_type != PROC_MANAGER)
+        return;
+
     const char *color = get_process_color(g_proc_type);
     const char *name  = get_process_name(g_proc_type, g_proc_id);
 
@@ -110,6 +115,11 @@ void log_msg(const char *fmt, ...)
  */
 void log_msg_color(const char *color, const char *fmt, ...)
 {
+    /* Po zamknieciu symulacji loguje tylko kierownik */
+    if (g_shm != NULL && !g_shm->simulation_running &&
+        g_proc_type != PROC_MANAGER)
+        return;
+
     const char *name = get_process_name(g_proc_type, g_proc_id);
 
     int hour = 0, min = 0;

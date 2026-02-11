@@ -163,17 +163,33 @@ static void process_checkout(struct checkout_msg *cmsg)
     g_shm->register_revenue[g_register_id] += total;
     sem_signal_undo(g_sem_id, SEM_SHM_MUTEX);
 
-    /* Wyslij paragon klientowi */
-    if (msgsnd_guarded(g_mq_receipt, &rmsg, sizeof(rmsg) - sizeof(long),
-                       g_sem_id, SEM_GUARD_RCPT(g_shm->num_products)) == -1) {
+    /* Wyslij paragon klientowi (IPC_NOWAIT z retry).
+     * Kolejka moze byc chwilowo pelna - klienci wlasnie odbieraja.
+     * Ponawiamy kilka razy z krotkim opoznieniem zanim zrezygnujemy. */
+    int sent = 0;
+    for (int attempt = 0; attempt < 10; attempt++) {
+        if (msgsnd(g_mq_receipt, &rmsg, sizeof(rmsg) - sizeof(long), IPC_NOWAIT) == 0) {
+            sent = 1;
+            break;
+        }
+        if (errno == EAGAIN) {
+            /* Kolejka pelna - poczekaj chwile i ponow */
+            usleep(g_shm->time_scale_ms * 100);
+            continue;
+        }
         if (errno == EIDRM || errno == EINVAL || errno == EINTR) {
             log_msg("Paragon dla PID:%d nie wyslany (zamykanie symulacji)",
                     cmsg->customer_pid);
-        } else {
-            handle_warning("msgsnd (receipt)");
-            log_msg("Blad wysylania paragonu do klienta PID:%d",
-                    cmsg->customer_pid);
+            break;
         }
+        handle_warning("msgsnd (receipt)");
+        log_msg("Blad wysylania paragonu do klienta PID:%d",
+                cmsg->customer_pid);
+        break;
+    }
+    if (!sent && errno == EAGAIN) {
+        log_msg("Paragon dla PID:%d nie wyslany (kolejka pelna po 10 probach)",
+                cmsg->customer_pid);
     }
 
     log_msg("Obsluzono klienta PID:%d - %d produktow, %.2f PLN",

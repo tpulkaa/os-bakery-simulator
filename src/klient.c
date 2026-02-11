@@ -294,10 +294,10 @@ static int do_checkout(void)
     int max_wait = 200;
 
     while (!g_evacuation && !g_terminate && wait_cycles < max_wait) {
-        ssize_t ret = msgrcv_guarded(g_mq_receipt, &rmsg,
+        /* Odbiór bez strażnika - kasjer wysyła z IPC_NOWAIT (plain msgsnd) */
+        ssize_t ret = msgrcv(g_mq_receipt, &rmsg,
                              sizeof(rmsg) - sizeof(long),
-                             (long)getpid(), IPC_NOWAIT,
-                             g_sem_id, SEM_GUARD_RCPT(g_shm->num_products));
+                             (long)getpid(), IPC_NOWAIT);
 
         if (ret >= 0) {
             /* Otrzymano paragon! */
@@ -322,6 +322,22 @@ static int do_checkout(void)
     }
 
     if (g_evacuation) return -1;
+
+    /* Ostatnia proba odebrania paragonu - mogl dojsc w ostatniej chwili */
+    {
+        struct receipt_msg drain;
+        ssize_t dret = msgrcv(g_mq_receipt, &drain,
+                              sizeof(drain) - sizeof(long),
+                              (long)getpid(), IPC_NOWAIT);
+        if (dret >= 0) {
+            sem_wait_undo(g_sem_id, SEM_SHM_MUTEX);
+            g_shm->customers_served++;
+            sem_signal_undo(g_sem_id, SEM_SHM_MUTEX);
+            log_msg_color(C_GREEN,
+                "Paragon: %d produktow, RAZEM: %.2f PLN", total_items, drain.total);
+            return 0;
+        }
+    }
 
     sem_wait_undo(g_sem_id, SEM_SHM_MUTEX);
     g_shm->customers_not_served++;

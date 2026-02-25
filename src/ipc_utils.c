@@ -412,13 +412,14 @@ int msgsnd_guarded(int mq_id, const void *msg, size_t msgsz,
         return -1; /* Przerwane sygnalem lub semafor usuniety */
 
     if (msgsnd(mq_id, msg, msgsz, 0) == -1) {
+        /* ZAWSZE przywroc semafor straznika przy bledzie msgsnd.
+         * Bez tego guard jest trwale dekrementowany (leak slotow). */
+        sem_signal_op(sem_id, guard_idx);
         if (errno == EIDRM || errno == EINVAL)
             return -1; /* Kolejka usunieta - shutdown */
         if (errno == EINTR)
             return -1;
         handle_warning("msgsnd (guarded)");
-        /* Oddaj slot z powrotem przy bledzie */
-        sem_signal_op(sem_id, guard_idx);
         return -1;
     }
 

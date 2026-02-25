@@ -108,6 +108,12 @@ static void *production_thread(void *arg)
         return NULL;
     }
 
+    /* Czekaj na otwarcie piekarni (zabezpieczenie przed race condition) */
+    while (!g_terminate && !g_evacuation && g_shm->simulation_running
+           && !g_shm->bakery_open) {
+        usleep(10 * 1000);
+    }
+
     while (!g_terminate && !g_evacuation && g_shm->bakery_open
            && g_shm->simulation_running) {
         int delay = (20 + rand() % 40) * g_shm->time_scale_ms / 100;
@@ -130,6 +136,10 @@ static void *production_thread(void *arg)
             int quantity = 8 + rand() % 13; /* 8-20 sztuki */
 
             for (int q = 0; q < quantity; q++) {
+                if (g_terminate || g_evacuation || !g_shm->bakery_open
+                    || !g_shm->simulation_running)
+                    break;
+
                 /* Sprawdz czy jest miejsce na podajniku (semafor) */
                 if (sem_trywait_op(g_sem_id, SEM_CONVEYOR_BASE + prod_id) == 0) {
                     /* Jest miejsce - wyslij ciastko na podajnik */
@@ -238,6 +248,12 @@ int main(int argc, char *argv[])
     }
 
     /* --- Glowna petla - czeka na sygnaly i monitoruje stan --- */
+    /* Czekaj na otwarcie piekarni (zabezpieczenie przed race condition) */
+    while (!g_terminate && !g_evacuation && g_shm->simulation_running
+           && !g_shm->bakery_open) {
+        usleep(10 * 1000);
+    }
+
     while (!g_terminate && !g_evacuation && g_shm->bakery_open
            && g_shm->simulation_running) {
         usleep(g_shm->time_scale_ms * 1000);

@@ -250,12 +250,12 @@ static void print_usage(const char *prog)
 static int parse_args(int argc, char *argv[], SharedData *shm)
 {
     /* Wartosci domyslne */
-    shm->max_customers  = 100;
+    shm->max_customers  = 1500;
     shm->num_products   = DEFAULT_NUM_PRODUCTS;
     shm->time_scale_ms  = 100;
     shm->open_hour      = 8;
     shm->open_min       = 0;
-    shm->close_hour     = 16;
+    shm->close_hour     = 23;
     shm->close_min      = 0;
 
     int opt;
@@ -289,7 +289,7 @@ static int parse_args(int argc, char *argv[], SharedData *shm)
     }
 
     /* Walidacja parametrow */
-    if (validate_int_range(shm->max_customers, 2, 100,
+    if (validate_int_range(shm->max_customers, 2, MAX_ACTIVE_CUST,
             "max_klientow (-n)") != 0) return -1;
     if (validate_int_range(shm->num_products, 1, MAX_PRODUCTS,
             "produkty (-p)") != 0) return -1;
@@ -378,11 +378,11 @@ static void init_shared_data(SharedData *shm)
     shm->customers_served        = 0;
     shm->customers_not_served    = 0;
 
-    /* Kasy: kasa 0 zawsze otwarta na poczatek, kasa 1 zamknieta */
+    /* Kasy: obie otwarte od poczatku */
     shm->register_open[0]      = 1;
-    shm->register_open[1]      = 0;
+    shm->register_open[1]      = 1;
     shm->register_accepting[0] = 1;
-    shm->register_accepting[1] = 0;
+    shm->register_accepting[1] = 1;
 
     /* Zegar symulacji = godzina otwarcia piekarni */
     shm->sim_hour = shm->open_hour;
@@ -553,7 +553,7 @@ static void update_register_state(void)
     sem_wait_undo(g_sem_id, SEM_SHM_MUTEX);
 
     int nc = g_shm->customers_in_shop;
-    int threshold = g_shm->max_customers / 2;
+    int threshold = g_shm->max_customers / 4;
 
     if (threshold < 1) threshold = 1;
 
@@ -995,15 +995,17 @@ int main(int argc, char *argv[])
     atexit(atexit_cleanup);
 
     /* --- 11. Uruchomienie procesow --- */
+    /* WAZNE: bakery_open MUSI byc ustawione PRZED start_baker(),
+     * inaczej watki produkcyjne piekarza widza bakery_open==0
+     * i natychmiast koncza prace (race condition). */
+    g_shm->bakery_open = 1;
+
     log_msg("Uruchamiam piekarza...");
     g_shm->baker_pid = start_baker();
 
     log_msg("Uruchamiam kasjerow...");
     g_shm->cashier_pids[0] = start_cashier(0);
     g_shm->cashier_pids[1] = start_cashier(1);
-
-    /* --- 12. Otwarcie piekarni --- */
-    g_shm->bakery_open = 1;
     log_msg("Ciastkarnia otwarta! Godzina: %02d:%02d",
             g_shm->sim_hour, g_shm->sim_min);
 
@@ -1077,11 +1079,24 @@ int main(int argc, char *argv[])
         /* --- Zamkniecie o godzinie Tk --- */
         if (g_shm->sim_hour >= g_shm->close_hour &&
             g_shm->sim_min >= g_shm->close_min) {
-            log_msg_color(C_RED, "Godzina zamkniecia: %02d:%02d",
-                          g_shm->sim_hour, g_shm->sim_min);
-            shutdown_simulation();
-            generate_report();
-            break;
+            /* Jesli klienci wciaz aktywni - czekaj na nich */
+            if (g_shm->total_customers_entered > 0
+                && g_shm->active_customers > 0) {
+                static int close_delay_logged = 0;
+                if (!close_delay_logged) {
+                    close_delay_logged = 1;
+                    log_msg_color(C_YELLOW,
+                        "Godzina zamkniecia %02d:%02d - czekam na %d aktywnych klientow.",
+                        g_shm->close_hour, g_shm->close_min,
+                        g_shm->active_customers);
+                }
+            } else {
+                log_msg_color(C_RED, "Godzina zamkniecia: %02d:%02d",
+                              g_shm->sim_hour, g_shm->sim_min);
+                shutdown_simulation();
+                generate_report();
+                break;
+            }
         }
 
         /* --- Wall-clock timeout (-t) --- */
@@ -1090,36 +1105,41 @@ int main(int argc, char *argv[])
             clock_gettime(CLOCK_MONOTONIC, &wall_now);
             int elapsed = (int)(wall_now.tv_sec - wall_start.tv_sec);
             if (elapsed >= g_max_time) {
-                log_msg_color(C_RED, "Timeout %d s - zamykanie symulacji.",
-                              g_max_time);
-                shutdown_simulation();
-                generate_report();
-                break;
+                /* Jesli klienci wciaz aktywni - nie zamykaj */
+                if (g_shm->total_customers_entered > 0
+                    && g_shm->active_customers > 0) {
+                    static int timeout_delay_logged = 0;
+                    if (!timeout_delay_logged) {
+                        timeout_delay_logged = 1;
+                        log_msg_color(C_YELLOW,
+                            "Timeout %d s - czekam na %d aktywnych klientow.",
+                            g_max_time, g_shm->active_customers);
+                    }
+                } else {
+                    log_msg_color(C_RED, "Timeout %d s - zamykanie symulacji.",
+                                  g_max_time);
+                    shutdown_simulation();
+                    generate_report();
+                    break;
+                }
             }
         }
 
-        /* --- Generowanie klientow (batch) --- */
-        if (g_shm->shop_open && !g_shm->evacuation_mode) {
-            customer_spawn_timer++;
-            if (customer_spawn_timer >= next_spawn_interval) {
-                customer_spawn_timer = 0;
-                next_spawn_interval = 1; /* co 1 minute symulacji */
-
-                /* Batch: 8-15 klientow naraz (~11 avg, 5000/450min = ~11/min) */
-                int batch = 8 + rand() % 8;
-                int spawned = 0;
-                for (int b = 0; b < batch; b++) {
-                    if (g_shm->total_customers_entered >= MAX_CUSTOMERS_TOTAL)
-                        break;
-                    if (g_shm->active_customers >= MAX_ACTIVE_CUST)
-                        break;
-                    start_customer();
-                    spawned++;
-                }
-                if (spawned > 0)
-                    log_msg("%d nowych klientow przyszlo do sklepu. (lacznie: %d)",
-                            spawned, g_shm->total_customers_entered);
+        /* --- Generowanie klientow (wszystkich naraz przy otwarciu) --- */
+        if (g_shm->shop_open && !g_shm->evacuation_mode
+            && g_shm->total_customers_entered < MAX_CUSTOMERS_TOTAL) {
+            int to_spawn = MAX_CUSTOMERS_TOTAL - g_shm->total_customers_entered;
+            log_msg("Spawnowanie %d klientow do kolejki...", to_spawn);
+            int spawned = 0;
+            for (int b = 0; b < to_spawn; b++) {
+                if (g_shm->active_customers >= MAX_ACTIVE_CUST)
+                    break;
+                start_customer();
+                spawned++;
             }
+            log_msg("Utworzono %d procesow klientow (lacznie: %d). "
+                    "Czekaja w kolejce na wejscie do sklepu.",
+                    spawned, g_shm->total_customers_entered);
         }
 
         /* --- Auto-zamkniecie po 5000 klientow --- */
@@ -1141,7 +1161,7 @@ int main(int argc, char *argv[])
                 last_active = g_shm->active_customers;
             }
             idle_ticks++;
-            if (idle_ticks > 120) { /* 120 min symulacji BEZ postepow */
+            if (idle_ticks > 600) { /* 600 min symulacji BEZ postepow */
                 log_msg_color(C_YELLOW,
                     "Timeout: %d aktywnych klientow nie konczy zakupow - wymuszam zamkniecie.",
                     g_shm->active_customers);

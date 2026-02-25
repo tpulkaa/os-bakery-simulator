@@ -181,7 +181,7 @@ static void do_shopping(int *shopping_list)
             /* Proba pobrania produktu z podajnika — z retry */
             struct conveyor_msg cmsg;
             int retries = 0;
-            int max_retries = 5;  /* max prob na 1 sztuke */
+            int max_retries = 500;  /* max prob na 1 sztuke */
             ssize_t ret = -1;
 
             while (retries < max_retries) {
@@ -291,7 +291,7 @@ static int do_checkout(void)
     /* Czekaj na paragon - z timeoutem (sprawdzaj ewakuacje) */
     struct receipt_msg rmsg;
     int wait_cycles = 0;
-    int max_wait = 200;
+    int max_wait = 2000;
 
     while (!g_evacuation && !g_terminate && wait_cycles < max_wait) {
         /* Odbiór bez strażnika - kasjer wysyła z IPC_NOWAIT (plain msgsnd) */
@@ -404,7 +404,7 @@ int main(int argc, char *argv[])
 
     /* Proba wejscia z timeoutem - nie czekaj w nieskonczonosc */
     int entry_attempts = 0;
-    while (entry_attempts < 100) {
+    while (entry_attempts < 5000) {
         if (g_evacuation || g_terminate || !g_shm->shop_open) {
             log_msg("Sklep zamkniety/ewakuacja - odchodzi.");
             detach_shared_memory(g_shm);
@@ -420,7 +420,7 @@ int main(int argc, char *argv[])
         entry_attempts++;
     }
 
-    if (entry_attempts >= 100) {
+    if (entry_attempts >= 5000) {
         sem_wait_undo(g_sem_id, SEM_SHM_MUTEX);
         g_shm->customers_not_served++;
         sem_signal_undo(g_sem_id, SEM_SHM_MUTEX);

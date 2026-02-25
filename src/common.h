@@ -33,7 +33,7 @@
 
 #define MAX_PRODUCTS        20   /* Maksymalna liczba produktow */
 #define MAX_CUSTOMERS_TOTAL 5000 /* Maks. laczna liczba klientow w symulacji */
-#define MAX_ACTIVE_CUST     300  /* Maks. procesow klientow jednoczesnie */
+#define MAX_ACTIVE_CUST     5000 /* Maks. procesow klientow jednoczesnie */
 #define MAX_NAME_LEN        32   /* Maks. dlugosc nazwy produktu */
 
 /* Sciezki plikow */

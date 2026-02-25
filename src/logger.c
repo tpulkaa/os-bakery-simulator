@@ -13,16 +13,30 @@
 static SharedData *g_shm      = NULL;
 static ProcessType g_proc_type = PROC_MANAGER;
 static int         g_proc_id   = 0;
+static FILE       *g_log_file  = NULL;
 
 /*
  * logger_init - Inicjalizacja loggera.
  * Kazdy proces wywoluje ja raz po dolaczeniu do pamieci dzielonej.
+ * Otwiera rowniez plik full_logs.txt w trybie append.
  */
 void logger_init(SharedData *shm, ProcessType type, int id)
 {
     g_shm       = shm;
     g_proc_type = type;
     g_proc_id   = id;
+
+    /* Zamknij poprzedni plik jesli byl otwarty (np. ponowne wywolanie) */
+    if (g_log_file != NULL) {
+        fclose(g_log_file);
+        g_log_file = NULL;
+    }
+
+    /* Otworz plik logu w trybie append (kazdy proces niezaleznie) */
+    if (shm != NULL) {
+        g_log_file = fopen(FULL_LOG_FILE, "a");
+        /* Brak pliku nie jest krytyczny - kontynuuj bez logowania do pliku */
+    }
 }
 
 /*
@@ -107,6 +121,15 @@ void log_msg(const char *fmt, ...)
             msg_buf);
     fflush(stdout);
     funlockfile(stdout);
+
+    /* Zapis do pliku (bez kolorow) */
+    if (g_log_file != NULL) {
+        flockfile(g_log_file);
+        fprintf(g_log_file, "[%02d:%02d] [%-12s] %s\n",
+                hour, min, name, msg_buf);
+        fflush(g_log_file);
+        funlockfile(g_log_file);
+    }
 }
 
 /*
@@ -140,4 +163,13 @@ void log_msg_color(const char *color, const char *fmt, ...)
             color, name, msg_buf, C_RESET);
     fflush(stdout);
     funlockfile(stdout);
+
+    /* Zapis do pliku (bez kolorow) */
+    if (g_log_file != NULL) {
+        flockfile(g_log_file);
+        fprintf(g_log_file, "[%02d:%02d] [%-12s] %s\n",
+                hour, min, name, msg_buf);
+        fflush(g_log_file);
+        funlockfile(g_log_file);
+    }
 }

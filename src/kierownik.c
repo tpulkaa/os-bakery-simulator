@@ -984,7 +984,13 @@ int main(int argc, char *argv[])
     /* --- 7. Tworzenie FIFO polecen (lacze nazwane) --- */
     create_fifo(FIFO_CMD_PATH);
 
-    /* --- 8. Logger --- */
+    /* --- 8. Wyczysc plik logow z poprzedniego uruchomienia --- */
+    {
+        FILE *f = fopen(FULL_LOG_FILE, "w");
+        if (f) fclose(f);
+    }
+
+    /* --- 9. Logger --- */
     logger_init(g_shm, PROC_MANAGER, 0);
 
     /* --- 9. Baner startowy --- */
